@@ -17,47 +17,70 @@ permissions:
   pages: write
   id-token: write
 
+# One deployment at a time, but never cancel an in-progress run: the scrape can
+# take ~90 min and we don't want to throw that work (or a live deploy) away.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
     # self-hosted runner (see ../enamad_runner) — GitHub's cloud runners can't
-    # reach enamad.ir; your machine can.
+    # reach enamad.ir; your machine can. Needs a runner agent recent enough to
+    # provide the Node 24 action runtime (v2.324.0+).
     runs-on: [self-hosted, enamad]
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
 
-      - run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Scrape enamad -> public/enamad_domainlist.csv
+        env:
+          THREADS: ${{ github.event.inputs.threads || '12' }}
+          END: ${{ github.event.inputs.end || '0' }}
         run: |
           python scrape.py run \
-            --threads "${{ github.event.inputs.threads || '12' }}" \
-            --end "${{ github.event.inputs.end || '0' }}" \
+            --threads "$THREADS" \
+            --end "$END" \
             --out public/enamad_domainlist.csv
+
+      - name: Sanity-check row count
+        env:
+          END: ${{ github.event.inputs.end || '0' }}
+        run: |
+          rows=$(($(wc -l < public/enamad_domainlist.csv) - 1))
+          echo "scraped $rows rows"
+          # On a full run (end=0) the registry is ~140k rows; anything tiny means
+          # the scrape was blocked/broken — fail instead of clobbering good data.
+          if [ "$END" = "0" ] && [ "$rows" -lt 10000 ]; then
+            echo "::error::only $rows rows on a full run — refusing to publish"
+            exit 1
+          fi
 
       - name: Build the Pages site
         run: python make_site.py --csv public/enamad_domainlist.csv --out public/index.html
 
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: public
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
