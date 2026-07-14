@@ -41,8 +41,14 @@ jobs:
           python-version: "3.12"
           enable-cache: true
 
+      # setup-uv provides a uv-managed Python (UV_PYTHON=3.12), which uv won't
+      # treat as a "system" interpreter — so install into a venv and put it on
+      # PATH for the later steps, which call `python` directly.
       - name: Install dependencies
-        run: uv pip install --system -r requirements.txt
+        run: |
+          uv venv
+          uv pip install -r requirements.txt
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Scrape enamad -> public/enamad_domainlist.csv
         env:
