@@ -23,8 +23,10 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # self-hosted runner (see ../enamad_runner) — GitHub's cloud runners can't
+    # reach enamad.ir; your machine can.
+    runs-on: [self-hosted, enamad]
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
