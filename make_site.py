@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Generate public/index.html — a self-contained searchable/paginated viewer for
+the scraped CSV (loads enamad_domainlist.csv client-side, renders 50 rows/page).
+"""
+import os
+import csv
+import argparse
+import datetime
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def count_rows(csv_path):
+    if not os.path.exists(csv_path):
+        return 0
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+        return max(0, sum(1 for _ in f) - 1)
+
+
+PAGE = r"""<!doctype html>
+<html lang="fa">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>enamad — کسب‌وکارهای دارای اینماد</title>
+<style>
+  :root { --fg:#1f2933; --muted:#616e7c; --line:#e4e7eb; --accent:#2563eb; --bg:#f7f8fa; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, "Segoe UI", Tahoma, Arial, sans-serif;
+         color:var(--fg); background:var(--bg); }
+  header { padding:20px 24px; background:#fff; border-bottom:1px solid var(--line); }
+  h1 { margin:0 0 6px; font-size:20px; }
+  .meta { color:var(--muted); font-size:13px; }
+  .meta b { color:var(--fg); }
+  .bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+         padding:14px 24px; position:sticky; top:0; background:var(--bg);
+         border-bottom:1px solid var(--line); }
+  input[type=search]{ flex:1; min-width:200px; padding:9px 12px; font-size:14px;
+         border:1px solid var(--line); border-radius:8px; background:#fff; }
+  .btn { padding:8px 14px; font-size:13px; border:1px solid var(--line);
+         border-radius:8px; background:#fff; color:var(--fg); cursor:pointer;
+         text-decoration:none; }
+  .btn.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .btn[disabled]{ opacity:.4; cursor:default; }
+  .wrap { overflow-x:auto; padding:0 24px 40px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; background:#fff;
+          margin-top:14px; border:1px solid var(--line); }
+  th, td { padding:8px 10px; border-bottom:1px solid var(--line); text-align:start;
+           white-space:nowrap; }
+  th { position:sticky; top:0; background:#eef1f5; font-weight:600; }
+  tr:hover td { background:#f2f6ff; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .pager { display:flex; gap:10px; align-items:center; padding:14px 24px;
+           color:var(--muted); font-size:13px; }
+  .fa td { text-align:start; }
+  #status { color:var(--muted); font-size:13px; padding:20px 24px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>فهرست کسب‌وکارهای دارای اینماد</h1>
+  <div class="meta">
+    <b>__ROWS__</b> رکورد · به‌روزرسانی: <b>__UPDATED__</b> ·
+    منبع: enamad.ir/DomainListForMIMT
+  </div>
+</header>
+
+<div class="bar">
+  <input id="q" type="search" placeholder="جستجو در دامنه، عنوان، استان، شهر…">
+  <a class="btn primary" href="enamad_domainlist.csv" download>دانلود CSV</a>
+</div>
+
+<div class="pager">
+  <button class="btn" id="prev">قبلی</button>
+  <span id="pos"></span>
+  <button class="btn" id="next">بعدی</button>
+</div>
+
+<div class="wrap"><div id="status">در حال بارگذاری داده‌ها…</div>
+  <table id="tbl" hidden><thead></thead><tbody></tbody></table>
+</div>
+
+<script>
+const PAGE_SIZE = 50;
+const HEADERS = ["#","دامنه","عنوان کسب‌وکار","استان","شهر","امتیاز",
+                 "تاریخ تأیید","تاریخ انقضا","اینماد"];
+let rows = [], filtered = [], page = 0;
+
+function parseCSV(text){
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);   // strip BOM
+  const out=[]; let f=[], cur="", q=false;
+  for (let i=0;i<text.length;i++){
+    const c=text[i];
+    if (q){
+      if (c === '"'){ if (text[i+1] === '"'){ cur+='"'; i++; } else q=false; }
+      else cur+=c;
+    } else if (c === '"') q=true;
+    else if (c === ','){ f.push(cur); cur=""; }
+    else if (c === '\n'){ f.push(cur); out.push(f); f=[]; cur=""; }
+    else if (c === '\r'){}
+    else cur+=c;
+  }
+  if (cur!=="" || f.length){ f.push(cur); out.push(f); }
+  return out;
+}
+
+function esc(s){ return (s||"").replace(/[&<>"]/g, m=>(
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m])); }
+
+function render(){
+  const start = page*PAGE_SIZE;
+  const slice = filtered.slice(start, start+PAGE_SIZE);
+  const tb = document.querySelector("#tbl tbody");
+  tb.innerHTML = slice.map(r => {
+    // CSV cols: row,domain,business_name,province,city,rating,approve,expire,id,code,url
+    const dom = esc(r[1]);
+    return `<tr class="fa">
+      <td>${esc(r[0])}</td>
+      <td><a href="https://${dom}" target="_blank" rel="noopener">${dom}</a></td>
+      <td dir="auto">${esc(r[2])}</td>
+      <td dir="auto">${esc(r[3])}</td>
+      <td dir="auto">${esc(r[4])}</td>
+      <td>${esc(r[5])}</td>
+      <td>${esc(r[6])}</td>
+      <td>${esc(r[7])}</td>
+      <td><a href="${esc(r[10])}" target="_blank" rel="noopener">مشاهده</a></td>
+    </tr>`;
+  }).join("");
+  const pages = Math.max(1, Math.ceil(filtered.length/PAGE_SIZE));
+  document.getElementById("pos").textContent =
+    `${filtered.length.toLocaleString("fa")} نتیجه · صفحه ${(page+1).toLocaleString("fa")} از ${pages.toLocaleString("fa")}`;
+  document.getElementById("prev").disabled = page<=0;
+  document.getElementById("next").disabled = page>=pages-1;
+}
+
+function applyFilter(term){
+  term = term.trim().toLowerCase();
+  filtered = !term ? rows :
+    rows.filter(r => (r[1]+" "+r[2]+" "+r[3]+" "+r[4]).toLowerCase().includes(term));
+  page = 0; render();
+}
+
+let t=null;
+document.getElementById("q").addEventListener("input", e=>{
+  clearTimeout(t); t=setTimeout(()=>applyFilter(e.target.value), 200);
+});
+document.getElementById("prev").onclick=()=>{ if(page>0){page--;render();} };
+document.getElementById("next").onclick=()=>{ page++; render(); };
+
+fetch("enamad_domainlist.csv").then(r=>r.text()).then(text=>{
+  const all = parseCSV(text);
+  rows = all.slice(1).filter(r=>r.length>1);
+  filtered = rows;
+  document.querySelector("#tbl thead").innerHTML =
+    "<tr>"+HEADERS.map(h=>`<th>${h}</th>`).join("")+"</tr>";
+  document.getElementById("status").hidden = true;
+  document.getElementById("tbl").hidden = false;
+  render();
+}).catch(e=>{
+  document.getElementById("status").textContent = "خطا در بارگذاری CSV: "+e;
+});
+</script>
+</body>
+</html>
+"""
+
+
+def main(csv_path, out_html):
+    rows = count_rows(csv_path)
+    updated = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    html = (PAGE.replace("__ROWS__", f"{rows:,}")
+                .replace("__UPDATED__", updated))
+    os.makedirs(os.path.dirname(os.path.abspath(out_html)), exist_ok=True)
+    with open(out_html, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"wrote {out_html} ({rows} rows)")
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--csv", default="public/enamad_domainlist.csv")
+    ap.add_argument("--out", default="public/index.html")
+    main(ap.parse_args().csv, ap.parse_args().out)

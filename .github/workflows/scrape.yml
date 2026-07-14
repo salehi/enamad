@@ -1,0 +1,61 @@
+name: scrape-and-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      threads:
+        description: "concurrent worker threads"
+        default: "12"
+      end:
+        description: "last page (0 = all)"
+        default: "0"
+  schedule:
+    - cron: "0 3 * * 1"   # weekly, Monday 03:00 UTC
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Scrape enamad -> public/enamad_domainlist.csv
+        run: |
+          python scrape.py run \
+            --threads "${{ github.event.inputs.threads || '12' }}" \
+            --end "${{ github.event.inputs.end || '0' }}" \
+            --out public/enamad_domainlist.csv
+
+      - name: Build the Pages site
+        run: python make_site.py --csv public/enamad_domainlist.csv --out public/index.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
